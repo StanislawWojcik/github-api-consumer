@@ -1,17 +1,14 @@
 package stanislaw.wojcik.githubapiconsumer.service;
 
-import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
 import stanislaw.wojcik.githubapiconsumer.entity.Branch;
-import stanislaw.wojcik.githubapiconsumer.entity.BranchWrapper;
+import stanislaw.wojcik.githubapiconsumer.entity.BranchDTO;
 import stanislaw.wojcik.githubapiconsumer.entity.Repository;
-import stanislaw.wojcik.githubapiconsumer.entity.RepositoryWrapper;
+import stanislaw.wojcik.githubapiconsumer.entity.RepositoryDTO;
 import stanislaw.wojcik.githubapiconsumer.exception.UserNotFoundException;
 
 import java.util.List;
@@ -19,59 +16,64 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class RepositoriesService {
 
-    @Value("${user.url.prefix}")
-    private String userUrlPrefix;
 
-    @Value("${user.url.suffix}")
-    private String userUrlSuffix;
+    private final String branchUrl;
+    private final String userUrl;
 
-    @Value("${repo.url.prefix}")
-    private String repoUrlPrefix;
+    private final WebClient webClient;
 
-    @Value("${repo.url.suffix}")
-    private String repoUrlSuffix;
-
-    @Autowired
-    private WebClient.Builder webClientBuilder;
-
+    public RepositoriesService(@Value("${base.url}") final String baseUrl,
+                               @Value("${branch.url}") final String branchUrl,
+                               @Value("${user.url}") final String userUrl) {
+        this.branchUrl = branchUrl;
+        this.userUrl = userUrl;
+        this.webClient = WebClient.builder()
+                .baseUrl(baseUrl)
+                .build();
+    }
 
     public List<Repository> getRepositories(final String username) {
-        final var url = buildUrl(userUrlPrefix, username, userUrlSuffix);
-        final var repositories = executeCall(url)
-                .onStatus(HttpStatus.NOT_FOUND::equals,
-                        clientResponse -> Mono.error(new UserNotFoundException("User not found.")))
-                .bodyToMono(new ParameterizedTypeReference<List<RepositoryWrapper>>() {
-                });
-        return Objects.requireNonNull(repositories.block()).stream()
+        final var repositories = fetchRepositories(username);
+        return Objects.requireNonNull(repositories).stream()
                 .map(repo -> buildSingleRepository(username, repo))
                 .collect(Collectors.toList());
     }
 
-    private Repository buildSingleRepository(final String username, final RepositoryWrapper repo) {
+    private Repository buildSingleRepository(final String username, final RepositoryDTO repo) {
         return new Repository(repo.name(), repo.owner().login(), getBranchesForRepo(repo.name(), username));
     }
 
     private List<Branch> getBranchesForRepo(final String repo, final String username) {
-        final var branchUrl = buildUrl(repoUrlPrefix, username, repo, repoUrlSuffix);
-        final var branches = executeCall(branchUrl)
-                .bodyToMono(new ParameterizedTypeReference<List<BranchWrapper>>() {
-                });
-        return Objects.requireNonNull(branches.block()).stream()
+        final var branches = fetchBranches(username, repo);
+        return Objects.requireNonNull(branches).stream()
                 .map(branch -> new Branch(branch.name(), branch.commit().sha()))
                 .collect(Collectors.toList());
     }
 
-    private WebClient.ResponseSpec executeCall(final String url) {
-        return webClientBuilder.build()
-                .get()
-                .uri(url)
-                .retrieve();
+    private List<BranchDTO> fetchBranches(final String username, final String repo) {
+        return webClient.get()
+                .uri(builder -> builder
+                        .path(branchUrl)
+                        .build(username, repo))
+                .retrieve()
+                .bodyToMono(new ParameterizedTypeReference<List<BranchDTO>>() {
+                }).block();
     }
 
-    private String buildUrl(final String... paths) {
-        return String.join("/", paths);
+    private List<RepositoryDTO> fetchRepositories(final String username) {
+        return webClient.get()
+                .uri(builder -> builder
+                        .path(userUrl)
+                        .build(username))
+                .exchangeToMono(response -> {
+                    if (response.statusCode().equals(HttpStatus.OK)) {
+                        return response.bodyToMono(new ParameterizedTypeReference<List<RepositoryDTO>>() {
+                        });
+                    } else {
+                        throw new UserNotFoundException("User not found.");
+                    }
+                }).block();
     }
 }

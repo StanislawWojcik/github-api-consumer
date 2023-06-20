@@ -1,3 +1,3 @@
 package stanislaw.wojcik.githubapiconsumer.entity;
 
-public record CommitWrapper(String sha) {}
+public record CommitDTO(String sha) {}
